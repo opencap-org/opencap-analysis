@@ -41,59 +41,16 @@ MARKER_NAME_MAPPING = {
     # Spine markers
     'C7_study': 'C7',
     
-    # Thigh markers (may not exist in all files)
-    # 'r_thigh1_study': 'r_thigh1',  # Check if exists in actual file
-    # 'r_thigh2_study': 'r_thigh2',  # Check if exists in actual file
-    # 'r_thigh3_study': 'r_thigh3',  # Check if exists in actual file
-    # 'L_thigh1_study': 'l_thigh1',  # Check if exists in actual file
-    # 'L_thigh2_study': 'l_thigh2',  # Check if exists in actual file
-    # 'L_thigh3_study': 'l_thigh3',  # Check if exists in actual file
-    
-    # Shank markers (may not exist in all files)
-    # 'r_sh1_study': 'r_sh1',  # Check if exists in actual file
-    # 'r_sh2_study': 'r_sh2',  # Check if exists in actual file
-    # 'r_sh3_study': 'r_sh3',  # Check if exists in actual file
-    # 'L_sh1_study': 'l_sh1',  # Check if exists in actual file
-    # 'L_sh2_study': 'l_sh2',  # Check if exists in actual file
-    # 'L_sh3_study': 'l_sh3',  # Check if exists in actual file
-    
     # Hip joint centers
     'RHJC_study': 'RHJC',  # Check if exists in actual file
     'LHJC_study': 'LHJC',  # Check if exists in actual file
     
     # Elbow markers
-    # 'r_lelbow_study': 'r_elbow',  # Approximate mapping
     'r_melbow_study': 'r_melbow',
-    # 'L_lelbow_study': 'l_elbow',  # Approximate mapping
     'L_melbow_study': 'l_melbow',
     
-    # Wrist markers
-    # 'r_lwrist_study': 'r_wrist_radius',  # Approximate mapping
-    # 'r_mwrist_study': 'r_wrist_ulna',  # Approximate mapping
-    # 'L_lwrist_study': 'l_wrist_radius',  # Approximate mapping
-    # 'L_mwrist_study': 'l_wrist_ulna',  # Approximate mapping
 }
 
 # Reverse mapping (actual -> expected) for renaming markers in TRC files
 REVERSE_MARKER_NAME_MAPPING = {v: k for k, v in MARKER_NAME_MAPPING.items()}
-
-# if __name__ == '__main__':
-#     """
-#     Print the mapping dictionary in a format suitable for use in cloud functions.
-#     """
-#     import json
-    
-#     print("Marker name mapping (expected -> actual):")
-#     print("=" * 60)
-#     for expected, actual in sorted(MARKER_NAME_MAPPING.items()):
-#         print(f"  '{expected}' -> '{actual}'")
-    
-#     print("\n\nReverse mapping (actual -> expected) for renaming:")
-#     print("=" * 60)
-#     for actual, expected in sorted(REVERSE_MARKER_NAME_MAPPING.items()):
-#         print(f"  '{actual}' -> '{expected}'")
-    
-#     print("\n\nJSON format (for cloud function):")
-#     print("=" * 60)
-#     print(json.dumps(REVERSE_MARKER_NAME_MAPPING, indent=2))
 
