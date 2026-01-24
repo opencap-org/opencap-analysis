@@ -34,7 +34,7 @@ import opensim
 from utilsAPI import get_api_url
 from utilsAuthentication import get_token
 import matplotlib.pyplot as plt
-from scipy.signal import gaussian
+from scipy.signal.windows import gaussian
 
 
 API_URL = get_api_url()
@@ -80,6 +80,22 @@ def get_user_sessions_all(user_token=API_TOKEN):
     
     return sessions
 
+# Returns a list of all subjects of the user.
+def get_user_subjects(user_token=API_TOKEN):
+    subjects = requests.get(
+            API_URL + "subjects/", 
+            headers = {"Authorization": "Token {}".format(user_token)}).json()
+    
+    return subjects
+
+# Returns a list of all sessions of a subject.
+def get_subject_sessions(subject_id, user_token=API_TOKEN):
+    sessions = requests.get(
+        API_URL + "subjects/{}/".format(subject_id),
+        headers = {"Authorization": "Token {}".format(user_token)}).json()['sessions']
+    
+    return sessions
+
 def get_trial_json(trial_id):
     trialJson = requests.get(
         API_URL + "trials/{}/".format(trial_id),
@@ -89,6 +105,8 @@ def get_trial_json(trial_id):
 
 def get_neutral_trial_id(session_id):
     session = get_session_json(session_id)    
+    if session['isMono']:
+        return None
     neutral_ids = [t['id'] for t in session['trials'] if t['name']=='neutral']
     
     if len(neutral_ids)>0:
@@ -125,28 +143,36 @@ def get_camera_mapping(session_id, session_path):
     if not os.path.exists(mappingPath):
         mappingURL = trial['results'][resultTags.index('camera_mapping')]['media']
         download_file(mappingURL, mappingPath)
+
+
+def get_metadata(session_path, trial, resultTags):
+    metadataPath = os.path.join(session_path,'sessionMetadata.yaml')
+    if not os.path.exists(metadataPath):
+        metadataURL = trial['results'][resultTags.index('session_metadata')]['media']
+        download_file(metadataURL, metadataPath)
     
+
+def get_model(session_path, trial, resultTags, isMono=False): 
+    modelURL = trial['results'][resultTags.index('opensim_model')]['media']
+    modelName = modelURL[modelURL.rfind('-')+1:modelURL.rfind('?')]
+    modelFolder = os.path.join(session_path, 'OpenSimData', 'Model')
+    if isMono:
+        modelFolder = os.path.join(modelFolder, trial['name'])
+    modelPath = os.path.join(modelFolder, modelName)
+    if not os.path.exists(modelPath):
+        os.makedirs(modelFolder, exist_ok=True)
+        download_file(modelURL, modelPath)
+    return modelName
+
 
 def get_model_and_metadata(session_id, session_path):
     neutral_id = get_neutral_trial_id(session_id)
     trial = get_trial_json(neutral_id)
     resultTags = [res['tag'] for res in trial['results']]
-    
-    # Metadata.
-    metadataPath = os.path.join(session_path,'sessionMetadata.yaml')
-    if not os.path.exists(metadataPath) :
-        metadataURL = trial['results'][resultTags.index('session_metadata')]['media']
-        download_file(metadataURL, metadataPath)
-    
-    # Model.
-    modelURL = trial['results'][resultTags.index('opensim_model')]['media']
-    modelName = modelURL[modelURL.rfind('-')+1:modelURL.rfind('?')]
-    modelFolder = os.path.join(session_path, 'OpenSimData', 'Model')
-    modelPath = os.path.join(modelFolder, modelName)
-    if not os.path.exists(modelPath):
-        os.makedirs(modelFolder, exist_ok=True)
-        download_file(modelURL, modelPath)
-        
+
+    get_metadata(session_path, trial, resultTags)
+    modelName = get_model(session_path, trial, resultTags)
+
     return modelName
 
 def get_main_settings(session_folder,trial_name):
@@ -169,34 +195,41 @@ def get_model_name_from_metadata(sessionFolder,appendText='_scaled'):
     return modelName
 
         
-def get_motion_data(trial_id, session_path):
+def get_motion_data(trial_id, session_path, isMono=False):
     trial = get_trial_json(trial_id)
     trial_name = trial['name']
     resultTags = [res['tag'] for res in trial['results']]
 
     # Marker data.
-    if 'ik_results' in resultTags:
+    if 'marker_data' in resultTags:
         markerFolder = os.path.join(session_path, 'MarkerData')
         markerPath = os.path.join(markerFolder, trial_name + '.trc')
         os.makedirs(markerFolder, exist_ok=True)
-        markerURL = trial['results'][resultTags.index('marker_data')]['media']
-        download_file(markerURL, markerPath)
+        if not os.path.exists(markerPath):
+            markerURL = trial['results'][resultTags.index('marker_data')]['media']
+            download_file(markerURL, markerPath)
     
     # IK data.
     if 'ik_results' in resultTags:
         ikFolder = os.path.join(session_path, 'OpenSimData', 'Kinematics')
         ikPath = os.path.join(ikFolder, trial_name + '.mot')
         os.makedirs(ikFolder, exist_ok=True)
-        ikURL = trial['results'][resultTags.index('ik_results')]['media']
-        download_file(ikURL, ikPath)
+        if not os.path.exists(ikPath):
+            ikURL = trial['results'][resultTags.index('ik_results')]['media']
+            download_file(ikURL, ikPath)
+
+    # Model data if mono trial (isMono = True in session JSON)
+    if isMono:
+        get_model(session_path, trial, resultTags, isMono=True)
         
     # Main settings
     if 'main_settings' in resultTags:
         settingsFolder = os.path.join(session_path, 'MarkerData', 'Settings')
         settingsPath = os.path.join(settingsFolder, 'settings_' + trial_name + '.yaml')
         os.makedirs(settingsFolder, exist_ok=True)
-        settingsURL = trial['results'][resultTags.index('main_settings')]['media']
-        download_file(settingsURL, settingsPath)  
+        if not os.path.exists(settingsPath):
+            settingsURL = trial['results'][resultTags.index('main_settings')]['media']
+            download_file(settingsURL, settingsPath)
         
         
 def get_geometries(session_path, modelName='LaiUhlrich2022_scaled'):
@@ -253,34 +286,65 @@ def download_kinematics(session_id, folder=None, trialNames=None):
     if folder is None:
         folder = os.getcwd()    
     os.makedirs(folder, exist_ok=True)
+
+    sessionJson = get_session_json(session_id)
+    isMono = sessionJson['isMono']
     
-    # Model and metadata.
-    neutral_id = get_neutral_trial_id(session_id)
-    get_motion_data(neutral_id, folder)
-    modelName = get_model_and_metadata(session_id, folder)
-    # Remove extension from modelName
-    modelName = modelName.replace('.osim','')
+    if not isMono:
+        # Model and metadata from neutral trial
+        neutral_id = get_neutral_trial_id(session_id)
+        get_motion_data(neutral_id, folder)
+        modelName = get_model_and_metadata(session_id, folder)
+        # Remove extension from modelName
+        modelName = modelName.replace('.osim','')
     
     # Session trial names.
-    sessionJson = get_session_json(session_id)
     sessionTrialNames = [t['name'] for t in sessionJson['trials']]
     if trialNames != None:
         [print(t + ' not in session trial names.') 
          for t in trialNames if t not in sessionTrialNames]
     
-    # Motion data.
+    # Get dynamic trial IDs
+    dynamic_ids = [t['id'] for t in sessionJson['trials'] if (t['name'] != 'calibration' and t['name'] !='neutral')]
+    
+    # Metadata for mono session
+    if isMono:
+        # Get metadata from the first dynamic trial
+        if dynamic_ids:
+            first_trial = get_trial_json(dynamic_ids[0])
+            resultTags = [res['tag'] for res in first_trial['results']]
+            get_metadata(folder, first_trial, resultTags)
+    
+    # Motion data for all dynamic trials
     loadedTrialNames = []
     for trialDict in sessionJson['trials']:
         if trialNames is not None and trialDict['name'] not in trialNames:
             continue        
         trial_id = trialDict['id']
-        get_motion_data(trial_id,folder)
+        get_motion_data(trial_id,folder, isMono=isMono)
         loadedTrialNames.append(trialDict['name'])
         
     # Remove 'calibration' and 'neutral' from loadedTrialNames.    
     loadedTrialNames = [i for i in loadedTrialNames if i!='neutral' and i!='calibration']
-        
+    
     # Geometries.
+    if isMono:
+        # For mono sessions, find model names in subfolders
+        modelDir = os.path.join(folder, 'OpenSimData', 'Model')
+        if os.path.exists(modelDir):
+            modelNames = []
+            for subfolder in os.listdir(modelDir):
+                subfolderPath = os.path.join(modelDir, subfolder)
+                if os.path.isdir(subfolderPath):
+                    modelNames.extend([f for f in os.listdir(subfolderPath) if f.endswith('.osim')])
+            if modelNames:
+                # Use first model name found (assuming same model type for all trials)
+                modelName = modelNames[0].replace('.osim', '')
+            else:
+                raise ValueError("No model files found in mono session subfolders")
+        else:
+            raise ValueError("Model directory does not exist")
+    
     get_geometries(folder, modelName=modelName)
         
     return loadedTrialNames, modelName
@@ -293,12 +357,20 @@ def download_trial(trial_id, folder, session_id=None):
         session_id = trial['session_id']
         
     os.makedirs(folder,exist_ok=True)
+
+    # check if it is a mono trial
+    session = get_session_json(session_id)
+    isMono = session['isMono']
     
-    # download model
-    get_model_and_metadata(session_id, folder)
-    
-    # download trc and mot
-    get_motion_data(trial_id,folder)
+    if isMono:
+        resultTags = [res['tag'] for res in trial['results']]
+        get_metadata(folder, trial, resultTags)
+    else:
+        # download model
+        get_model_and_metadata(session_id, folder)
+
+    # download trc and mot + model if mono trial
+    get_motion_data(trial_id,folder, isMono=isMono)
     
     return trial['name']
 
@@ -475,8 +547,7 @@ def download_videos_from_server(session_id,trial_id,
         with open(os.path.join(session_path, "Videos", 'mappingCamDevice.pickle'), 'rb') as handle:
             mappingCamDevice = pickle.load(handle) 
             # ensure upper on deviceID
-            for dID in mappingCamDevice.keys():
-                mappingCamDevice[dID.upper()] = mappingCamDevice.pop(dID)
+            mappingCamDevice = {k.upper(): v for k, v in mappingCamDevice.items()}
         for video in trial["videos"]:            
             k = mappingCamDevice[video["device_id"].replace('-', '').upper()] 
             videoDir = os.path.join(session_path, "Videos", "Cam{}".format(k), "InputMedia", trial_name)
@@ -555,7 +626,54 @@ def post_file_to_trial(filePath,trial_id,tag,device_id):
     requests.post("{}results/".format(API_URL), files=files, data=data,
                          headers = {"Authorization": "Token {}".format(API_TOKEN)})
     files["media"].close()
+
+def post_video_to_trial(filePath,trial_id,device_id,parameters):
+    files = {'video': open(filePath, 'rb')}
+    data = {
+        "trial": trial_id,
+        "device_id" : device_id,
+        "parameters": parameters
+    }
+
+    requests.post("{}videos/".format(API_URL), files=files, data=data,
+                         headers = {"Authorization": "Token {}".format(API_TOKEN)})
+    files["video"].close()
+
+def delete_video_from_trial(video_id):
+
+    requests.delete("{}videos/{}/".format(API_URL, video_id),
+                        headers = {"Authorization": "Token {}".format(API_TOKEN)})
     
+def delete_results(trial_id, tag=None, resultNum=None):
+    # Delete specific result number, or all results with a specific tag, or all results if tag==None
+    if resultNum != None:
+        resultNums = [resultNum]
+    elif tag != None:
+        trial = get_trial_json(trial_id)
+        resultNums = [r['id'] for r in trial['results'] if r['tag']==tag]
+        
+    elif tag == None: 
+        trial = get_trial_json(trial_id)
+        resultNums = [r['id'] for r in trial['results']]
+
+    for rNum in resultNums:
+        requests.delete(API_URL + "results/{}/".format(rNum),
+                        headers = {"Authorization": "Token {}".format(API_TOKEN)})
+        
+def set_trial_status(trial_id, status):
+
+    # Available statuses: 'done', 'error', 'stopped', 'reprocess'
+    # 'processing' and 'recording also exist, but it does not make sense to set them manually.
+    # Throw error if status is not one of the above.
+    if status not in ['done', 'error', 'stopped', 'reprocess']:
+        raise ValueError('Invalid status. Available statuses: done, error, stopped, reprocess')
+
+    requests.patch(API_URL+"trials/{}/".format(trial_id), data={'status': status},
+                     headers = {"Authorization": "Token {}".format(API_TOKEN)})
+    
+def set_session_subject(session_id, subject_id):
+    requests.patch(API_URL+"sessions/{}/".format(session_id), data={'subject': subject_id},
+                     headers = {"Authorization": "Token {}".format(API_TOKEN)})  
 
 def get_syncd_videos(trial_id,session_path):
     trial = requests.get("{}trials/{}/".format(API_URL,trial_id),
@@ -584,44 +702,57 @@ def download_session(session_id, sessionBasePath= None,
     
     session = get_session_json(session_id)
     session_path = os.path.join(sessionBasePath,'OpenCapData_' + session_id) 
+
+    os.makedirs(session_path, exist_ok=True)
+
+    isMono = session['isMono']
     
-    calib_id = get_calibration_trial_id(session_id)
-    neutral_id = get_neutral_trial_id(session_id)
+    if not isMono:
+        calib_id = get_calibration_trial_id(session_id)
+        neutral_id = get_neutral_trial_id(session_id)
+
+        # Calibration
+        try:
+            get_camera_mapping(session_id, session_path)
+            if downloadVideos:
+                download_videos_from_server(session_id,calib_id,
+                                    isCalibration=True,isStaticPose=False,
+                                    session_path = session_path) 
+
+            get_calibration(session_id,session_path)
+        except:
+            pass
+        
+        # Neutral
+        try:
+            modelName = get_model_and_metadata(session_id,session_path)
+            get_motion_data(neutral_id,session_path)
+            if downloadVideos:
+                download_videos_from_server(session_id,neutral_id,
+                                isCalibration=False,isStaticPose=True,
+                                session_path = session_path)
+
+            get_syncd_videos(neutral_id,session_path)
+        except:
+            pass
+
     dynamic_ids = [t['id'] for t in session['trials'] if (t['name'] != 'calibration' and t['name'] !='neutral')]  
-    
-    # Calibration
-    try:
-        get_camera_mapping(session_id, session_path)
-        if downloadVideos:
-            download_videos_from_server(session_id,calib_id,
-                                 isCalibration=True,isStaticPose=False,
-                                 session_path = session_path) 
 
-        get_calibration(session_id,session_path)
-    except:
-        pass
-    
-    # Neutral
-    try:
-        modelName = get_model_and_metadata(session_id,session_path)
-        get_motion_data(neutral_id,session_path)
-        if downloadVideos:
-            download_videos_from_server(session_id,neutral_id,
-                             isCalibration=False,isStaticPose=True,
-                             session_path = session_path)
-
-        get_syncd_videos(neutral_id,session_path)
-    except:
-        pass
+    # Metadata for mono session
+    if isMono:
+        # hand the first dynamic trial
+        first_trial = get_trial_json(dynamic_ids[0])
+        resultTags = [res['tag'] for res in first_trial['results']]
+        get_metadata(session_path, first_trial, resultTags)
 
     # Dynamic
     for dynamic_id in dynamic_ids:
         try:
-            get_motion_data(dynamic_id,session_path)
+            get_motion_data(dynamic_id,session_path, isMono=isMono)
             if downloadVideos:
                 download_videos_from_server(session_id,dynamic_id,
                          isCalibration=False,isStaticPose=False,
-                         session_path = session_path)
+                         session_path=session_path)
 
             get_syncd_videos(dynamic_id,session_path)
         except:
@@ -639,16 +770,33 @@ def download_session(session_id, sessionBasePath= None,
         
     # Geometry
     try:
-        if 'Lai' in modelName:
-            modelType = 'LaiArnold'
+        if isMono:
+            # get all names of .osim files in subfolders of Model folder
+            modelDir = os.path.join(session_path, 'OpenSimData', 'Model')
+            modelNames = []
+            for subfolder in os.listdir(modelDir):
+                subfolderPath = os.path.join(modelDir, subfolder)
+                if os.path.isdir(subfolderPath):
+                    modelNames.extend([f for f in os.listdir(subfolderPath) if f.endswith('.osim')])
+            # check if any of the model names contain 'Lai', assuming the same model type is used for all trials of the session
+            if any('Lai' in name for name in modelNames):
+                modelType = 'LaiArnold'
+            else:
+                raise ValueError("Geometries not available for this model, please contact us")
+            modelName = modelNames[0]
+
         else:
-            raise ValueError("Geometries not available for this model, please contact us")
+            if 'Lai' in modelName:
+                modelType = 'LaiArnold'
+            else:
+                raise ValueError("Geometries not available for this model, please contact us")
+
         if platform.system() == 'Windows':
             geometryDir = os.path.join(repoDir, 'tmp', modelType, 'Geometry')
         else:
             geometryDir = "/tmp/{}/Geometry".format(modelType)
-        # If not in cache, download from s3.
-        if not os.path.exists(geometryDir):
+        # If not in cache or empty, download from s3.
+        if not os.path.exists(geometryDir) or not os.listdir(geometryDir):
             os.makedirs(geometryDir, exist_ok=True)
             get_geometries(session_path, modelName=modelName)
         geometryDirEnd = os.path.join(session_path, 'OpenSimData', 'Model', 'Geometry')
