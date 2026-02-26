@@ -31,6 +31,17 @@ def handler(event, context):
         To invoke the function do POST request on the following url
         http://localhost:8080/2015-03-31/functions/function/invocations
     """
+    try:
+        return _handler(event, context)
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'headers': {'Content-Type': 'application/json'},
+            'body': {'error': str(e)}
+        }
+
+
+def _handler(event, context):
     body = event.get('body', None)
     if isinstance(body, dict):
         kwargs = body
@@ -84,14 +95,23 @@ def handler(event, context):
     
     # %% Process data.
     # Init gait analysis and get gait events.
+    # Try with end trimming first (removes HRNet artifacts when subject leaves
+    # frame); fall back to no trimming if not enough gait cycles are found.
     legs = ['r']
     gait, gait_events = {}, {}
     for leg in legs:
-        gait[leg] = gait_analysis(
-            sessionDir, trial_name, leg=leg,
-            lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
-            n_gait_cycles=n_gait_cycles, gait_style='overground',
-            trimming_start=0, trimming_end=0.5)
+        try:
+            gait[leg] = gait_analysis(
+                sessionDir, trial_name, leg=leg,
+                lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
+                n_gait_cycles=n_gait_cycles, gait_style='overground',
+                trimming_start=0, trimming_end=0.5)
+        except Exception:
+            gait[leg] = gait_analysis(
+                sessionDir, trial_name, leg=leg,
+                lowpass_cutoff_frequency_for_coordinate_values=filter_frequency,
+                n_gait_cycles=n_gait_cycles, gait_style='overground',
+                trimming_start=0, trimming_end=0)
         gait_events[leg] = gait[leg].get_gait_events()
     
     # Select last leg.
