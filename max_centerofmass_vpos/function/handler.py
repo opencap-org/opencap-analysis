@@ -32,6 +32,17 @@ def handler(event, context):
         To invoke the function do POST request on the following url
         http://localhost:8080/2015-03-31/functions/function/invocations
     """
+    try:
+        return _handler(event, context)
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'headers': {'Content-Type': 'application/json'},
+            'body': {'error': str(e)}
+        }
+
+
+def _handler(event, context):
     body = event.get('body', None)
     if isinstance(body, dict):
         kwargs = body
