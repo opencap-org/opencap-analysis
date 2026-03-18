@@ -20,6 +20,7 @@
 
 import os
 import opensim
+import copy
 import utils
 import numpy as np
 import pandas as pd
@@ -28,6 +29,15 @@ import scipy.interpolate as interpolate
 
 from utilsProcessing import lowPassFilter
 from utilsTRC import trc_2_dict
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+# Import marker name mapping for conversion
+try:
+    from marker_name_mapping import REVERSE_MARKER_NAME_MAPPING
+except ImportError:
+    # If mapping file doesn't exist, use empty dict (no conversion)
+    REVERSE_MARKER_NAME_MAPPING = {}
 
 
 class kinematics:
@@ -43,18 +53,50 @@ class kinematics:
         opensim.Logger.setLevelString('error')
         
         modelBasePath = os.path.join(sessionDir, 'OpenSimData', 'Model')
+        
+        # Check if this is a mono session (models stored in trial subfolders)
+        # Check specifically for a subfolder matching the trial name
+        isMono = False
+        if os.path.exists(modelBasePath):
+            trialModelPath = os.path.join(modelBasePath, trialName)
+            if os.path.isdir(trialModelPath):
+                isMono = True
+        
         # Load model if specified, otherwise load the one that was on server
         if modelName is None:
-            modelName = utils.get_model_name_from_metadata(sessionDir)
-            modelPath = os.path.join(modelBasePath,modelName)
+            if isMono:
+                # For mono sessions, look in the trial subfolder
+                trialModelPath = os.path.join(modelBasePath, trialName)
+                if os.path.exists(trialModelPath):
+                    # Find .osim file in the trial subfolder
+                    osimFiles = [f for f in os.listdir(trialModelPath) if f.endswith('.osim')]
+                    if osimFiles:
+                        modelPath = os.path.join(trialModelPath, osimFiles[0])
+                    else:
+                        raise Exception('No .osim file found in ' + trialModelPath)
+                else:
+                    raise Exception('Trial model folder does not exist: ' + trialModelPath)
+            else:
+                modelName = utils.get_model_name_from_metadata(sessionDir)
+                modelPath = os.path.join(modelBasePath, modelName)
         else:
-            modelPath = os.path.join(modelBasePath,
-                                 '{}.osim'.format(modelName))
+            if isMono:
+                # For mono sessions, look in the trial subfolder
+                trialModelPath = os.path.join(modelBasePath, trialName)
+                if not modelName.endswith('.osim'):
+                    modelName = modelName + '.osim'
+                modelPath = os.path.join(trialModelPath, modelName)
+            else:
+                if not modelName.endswith('.osim'):
+                    modelPath = os.path.join(modelBasePath, '{}.osim'.format(modelName))
+                else:
+                    modelPath = os.path.join(modelBasePath, modelName)
             
         # make sure model exists
         if not os.path.exists(modelPath):
             raise Exception('Model path: ' + modelPath + ' does not exist.')
 
+        self.modelPath = modelPath
         self.model = opensim.Model(modelPath)
         self.model.initSystem()
         
@@ -62,7 +104,7 @@ class kinematics:
         motionPath = os.path.join(sessionDir, 'OpenSimData', 'Kinematics',
                                   '{}.mot'.format(trialName))
         
-        # Create time-series table with coordinate values.
+        # Create time-series table with coordinate values.             
         self.table = opensim.TimeSeriesTable(motionPath)        
         tableProcessor = opensim.TableProcessor(self.table)
         self.columnLabels = list(self.table.getColumnLabels())
@@ -102,7 +144,7 @@ class kinematics:
             self.Qds[:,i] = splineD1(self.time)
             # Coordinate accelerations.
             splineD2 = spline.derivative(n=2)
-            self.Qdds[:,i] = splineD2(self.time)
+            self.Qdds[:,i] = splineD2(self.time)            
             # Add coordinate speeds to table.
             columnLabel_speed = columnLabel[:-5] + 'speed'
             self.table.appendColumn(
@@ -118,14 +160,14 @@ class kinematics:
         existingLabels = self.table.getColumnLabels()
         for stateVariableNameStr in stateVariableNamesStr:
             if not stateVariableNameStr in existingLabels:
-                vec_0 = opensim.Vector([0] * self.table.getNumRows())     
+                vec_0 = opensim.Vector([0] * self.table.getNumRows())            
                 self.table.appendColumn(stateVariableNameStr, vec_0)
                        
         # Number of muscles.
         self.nMuscles = 0
         self.forceSet = self.model.getForceSet()
         for i in range(self.forceSet.getSize()):        
-            c_force_elt = self.forceSet.get(i)
+            c_force_elt = self.forceSet.get(i)  
             if 'Muscle' in c_force_elt.getConcreteClassName():
                 self.nMuscles += 1
                 
@@ -172,6 +214,25 @@ class kinematics:
                                    '{}.trc'.format(trial_name))
         
         markerDict = trc_2_dict(trcFilePath)
+        
+        # Convert marker names from actual format to expected format (with _study suffix)
+        if REVERSE_MARKER_NAME_MAPPING:
+            converted_markers = {}
+            # First pass: add markers that are already in correct format (prioritize these)
+            for marker_name, marker_data in markerDict['markers'].items():
+                if marker_name not in REVERSE_MARKER_NAME_MAPPING:
+                    # Already in correct format or unknown marker - keep as-is
+                    converted_markers[marker_name] = marker_data
+            # Second pass: convert markers that need renaming (only if target doesn't exist)
+            for marker_name, marker_data in markerDict['markers'].items():
+                if marker_name in REVERSE_MARKER_NAME_MAPPING:
+                    new_name = REVERSE_MARKER_NAME_MAPPING[marker_name]
+                    # Only convert if the target name doesn't already exist
+                    # (avoids overwriting markers already in correct format)
+                    if new_name not in converted_markers:
+                        converted_markers[new_name] = marker_data
+            markerDict['markers'] = converted_markers
+        
         if lowpass_cutoff_frequency > 0:
             markerDict['markers'] = {
                 marker_name: lowPassFilter(self.time, data, lowpass_cutoff_frequency) 
@@ -179,33 +240,40 @@ class kinematics:
         
         return markerDict
     
-    def get_body_transform_dict(self):
-    
-        states_traj = self.stateTrajectory()
-        states_table = states_traj.exportToTable(self.model)
-    
-        body_dict = {}
-        body_dict['time'] = np.array(states_table.getIndependentColumn())
+    def rotate_marker_dict(self, markerDict, euler_angles):
+        # euler_angles is a dictionary with keys being the axes of rotation
+        # (x, y, z) and values being the angles in degrees. e.g. {'x': 90, 'y': 180}
         
-        body_list = []
-        body_transforms_dict = {}
-        for body in self.model.getBodySet():
-            body_list.append(body.getName())
-            body_transforms_dict[body.getName()] = []
-        body_dict['body_names'] = body_list
-            
-        for i in range(self.table.getNumRows()):
-            this_state = states_traj[i]
-            self.model.realizePosition(this_state)
-            
-            for body in self.model.getBodySet():
-                this_body_transform = body.getTransformInGround(this_state)
-                body_transforms_dict[body.getName()].append(this_body_transform)
+        rotated_marker_dict = copy.deepcopy(markerDict)
+        rotated_marker_dict['markers'] = {}
         
-        body_dict['body_transforms'] = body_transforms_dict
+        rotation = Rotation.from_euler(''.join(list(euler_angles.keys())),
+                                       list(euler_angles.values()), degrees=True)
         
-        return body_dict
-    
+        for marker, positions in markerDict['markers'].items():
+            rotated_positions = rotation.apply(positions)
+            rotated_marker_dict['markers'][marker] = rotated_positions
+        
+        return rotated_marker_dict
+        
+    def rotate_com(self, comValues, euler_angles):
+        # euler_angles is a dictionary with keys being the axes of rotation
+        # (x, y, z) and values being the angles in degrees. e.g. {'x': 90, 'y': 180}
+        
+        rotation = Rotation.from_euler(''.join(list(euler_angles.keys())),
+                                       list(euler_angles.values()), degrees=True)
+        
+        # turn the x, y, z dataframe entries into a into a 3xN array
+        comValuesArray = comValues[['x','y','z']].to_numpy()
+
+        rotated_com = rotation.apply(comValuesArray)
+
+        # turn back into a dataframe with time as first column 
+        rotated_com = pd.DataFrame(data=np.concatenate((np.expand_dims(comValues['time'].to_numpy(), axis=1), rotated_com), axis=1),
+                                   columns=['time','x','y','z'])
+               
+        return rotated_com
+
     def get_coordinate_values(self, in_degrees=True, 
                               lowpass_cutoff_frequency=-1):
         
@@ -228,9 +296,9 @@ class kinematics:
         data = np.concatenate(
             (np.expand_dims(self.time, axis=1), Qs), axis=1)
         columns = ['time'] + self.columnLabels            
-        coordinate_values = pd.DataFrame(data=data, columns=columns)
+        self.coordinate_values = pd.DataFrame(data=data, columns=columns)
         
-        return coordinate_values
+        return self.coordinate_values
     
     def get_coordinate_speeds(self, in_degrees=True, 
                               lowpass_cutoff_frequency=-1):
@@ -433,4 +501,95 @@ class kinematics:
         columns = ['time'] + ['x','y','z']               
         com_accelerations = pd.DataFrame(data=data, columns=columns)
         
-        return com_accelerations        
+        return com_accelerations 
+
+    def get_body_angular_velocity(self, body_names=None, lowpass_cutoff_frequency=-1,
+                                  expressed_in='body'):
+        
+        body_set = self.model.getBodySet()
+        if body_names is None:
+            body_names = []
+            for i in range(body_set.getSize()):
+                print(i)
+                body = body_set.get(i)
+                body_names.append(body.getName())
+        
+        bodies = [body_set.get(body_name) for body_name in body_names]           
+        ground = self.model.getGround()
+
+        angular_velocity = np.ndarray((self.table.getNumRows(),
+                              len(body_names)*3)) # time x bodies x dim
+                        
+        for i_time in range(self.table.getNumRows()): # loop over time
+            state = self.stateTrajectory()[i_time]
+            self.model.realizeVelocity(state)
+            
+            
+            for i_body,body in enumerate(bodies):
+                ang_vel_in_ground = body.getAngularVelocityInGround(state)
+                if expressed_in == 'body':
+                    angular_velocity[i_time, i_body*3:i_body*3+3] = ground.expressVectorInAnotherFrame(
+                                                          state, ang_vel_in_ground, body
+                                                          ).to_numpy()
+                elif expressed_in == 'ground':
+                    angular_velocity[i_time, i_body*3:i_body*3+3] = ang_vel_in_ground.to_numpy()
+                else:
+                    raise Exception (expressed_in + ' is not a valid frame to express angular' + 
+                                     ' velocity.')
+                    
+        angular_velocity_filtered = lowPassFilter(self.time, angular_velocity, lowpass_cutoff_frequency)
+        
+        # Put into a dataframe
+        data = np.concatenate((np.expand_dims(self.time, axis=1), angular_velocity_filtered), axis=1)
+        columns = ['time']
+        for i, body_name in enumerate(body_names):
+            columns += [f'{body_name}_x', f'{body_name}_y', f'{body_name}_z']
+        angular_velocity_df = pd.DataFrame(data=data, columns=columns)
+                                                                                                
+        return angular_velocity_df
+
+    def get_ranges_of_motion(self, in_degrees=True, lowpass_cutoff_frequency=-1):
+        
+        self.get_coordinate_values(
+            in_degrees=in_degrees, 
+            lowpass_cutoff_frequency=lowpass_cutoff_frequency)
+        
+        # Compute ranges of motion.        
+        ROM = {}
+        for c, coord in enumerate(self.coordinates):
+            ROM[coord] = {}
+            ROM[coord]['min'] = self.coordinate_values[coord].min()
+            ROM[coord]['max'] = self.coordinate_values[coord].max()
+            ROM[coord]['amplitude'] = (
+                self.coordinate_values[coord].max() - 
+                self.coordinate_values[coord].min())
+            
+        return ROM 
+
+
+    def get_body_transform_dict(self):
+    
+        states_traj = self.stateTrajectory()
+        states_table = states_traj.exportToTable(self.model)
+    
+        body_dict = {}
+        body_dict['time'] = np.array(states_table.getIndependentColumn())
+        
+        body_list = []
+        body_transforms_dict = {}
+        for body in self.model.getBodySet():
+            body_list.append(body.getName())
+            body_transforms_dict[body.getName()] = []
+        body_dict['body_names'] = body_list
+            
+        for i in range(self.table.getNumRows()):
+            this_state = states_traj[i]
+            self.model.realizePosition(this_state)
+            
+            for body in self.model.getBodySet():
+                this_body_transform = body.getTransformInGround(this_state)
+                body_transforms_dict[body.getName()].append(this_body_transform)
+        
+        body_dict['body_transforms'] = body_transforms_dict
+        
+        return body_dict
